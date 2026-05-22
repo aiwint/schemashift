@@ -25,22 +25,23 @@ SCHEMA_V2 = _schema(
 SCHEMA_V3 = _schema(pa.field("id", pa.int64()))  # 'name' removed — breaking
 
 
-class TestWatch:
-    def _make_config(self, side_effects, on_change, max_polls):
-        cfg = WatcherConfig(
-            path=Path("fake.parquet"),
-            interval_seconds=0,
-            max_polls=max_polls,
-            on_change=on_change,
-        )
-        return cfg
+def _make_config(on_change, max_polls, path=Path("fake.parquet")):
+    """Build a WatcherConfig with sensible test defaults."""
+    return WatcherConfig(
+        path=path,
+        interval_seconds=0,
+        max_polls=max_polls,
+        on_change=on_change,
+    )
 
+
+class TestWatch:
     @patch("schemashift.watcher.time.sleep")
     @patch("schemashift.watcher.read_schema")
     def test_no_change_emits_no_event(self, mock_read, mock_sleep):
         mock_read.return_value = SCHEMA_V1
         events = []
-        cfg = self._make_config(None, events.append, max_polls=3)
+        cfg = _make_config(events.append, max_polls=3)
         watch(cfg)
         assert events == []
         assert mock_sleep.call_count == 3
@@ -50,7 +51,7 @@ class TestWatch:
     def test_added_column_emits_event(self, mock_read, mock_sleep):
         mock_read.side_effect = [SCHEMA_V1, SCHEMA_V1, SCHEMA_V2]
         events = []
-        cfg = self._make_config(None, events.append, max_polls=2)
+        cfg = _make_config(events.append, max_polls=2)
         watch(cfg)
         assert len(events) == 1
         evt: WatchEvent = events[0]
@@ -62,7 +63,7 @@ class TestWatch:
     def test_removed_column_is_breaking(self, mock_read, mock_sleep):
         mock_read.side_effect = [SCHEMA_V1, SCHEMA_V3]
         events = []
-        cfg = self._make_config(None, events.append, max_polls=1)
+        cfg = _make_config(events.append, max_polls=1)
         watch(cfg)
         assert len(events) == 1
         assert events[0].is_breaking
@@ -73,10 +74,21 @@ class TestWatch:
     def test_previous_schema_updated_after_change(self, mock_read, mock_sleep):
         mock_read.side_effect = [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3]
         events = []
-        cfg = self._make_config(None, events.append, max_polls=2)
+        cfg = _make_config(events.append, max_polls=2)
         watch(cfg)
         assert len(events) == 2
         # Second event should compare V2 -> V3, not V1 -> V3
         removed_names = {f.name for f in events[1].diff.removed}
         assert "name" in removed_names
         assert "id" not in removed_names
+
+    @patch("schemashift.watcher.time.sleep")
+    @patch("schemashift.watcher.read_schema")
+    def test_watch_uses_configured_path(self, mock_read, mock_sleep):
+        """Ensure read_schema is called with the path from the config."""
+        custom_path = Path("data/custom.parquet")
+        mock_read.return_value = SCHEMA_V1
+        cfg = _make_config(lambda e: None, max_polls=1, path=custom_path)
+        watch(cfg)
+        for called_args in mock_read.call_args_list:
+            assert called_args == call(custom_path)
