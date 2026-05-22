@@ -1,63 +1,49 @@
-"""Command-line interface for SchemaShift."""
+"""CLI entry-point for schemashift."""
+
+from __future__ import annotations
 
 import sys
-from pathlib import Path
 
 import click
 
-from schemashift import __version__
 from schemashift.schema_reader import read_schema
-from schemashift.schema_diff import diff_schemas
+from schemashift.schema_diff import diff_schemas, has_breaking_changes, is_empty
+from schemashift.report import OutputFormat, render
 
 
 @click.group()
-@click.version_option(__version__, prog_name="schemashift")
 def cli() -> None:
-    """SchemaShift — detect and summarize breaking schema changes."""
+    """schemashift — detect and summarise breaking schema changes."""
 
 
-@cli.command("diff")
-@click.argument("old_file", type=click.Path(exists=True, path_type=Path))
-@click.argument("new_file", type=click.Path(exists=True, path_type=Path))
-@click.option("--strict", is_flag=True, help="Exit with code 1 if breaking changes found.")
-def diff_cmd(old_file: Path, new_file: Path, strict: bool) -> None:
-    """Compare schemas of OLD_FILE and NEW_FILE and report changes."""
+@cli.command(name="diff")
+@click.argument("old_file", type=click.Path(exists=True))
+@click.argument("new_file", type=click.Path(exists=True))
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice([f.value for f in OutputFormat], case_sensitive=False),
+    default=OutputFormat.TEXT.value,
+    show_default=True,
+    help="Output format.",
+)
+@click.option(
+    "--exit-code",
+    is_flag=True,
+    default=False,
+    help="Exit with code 1 when breaking changes are detected.",
+)
+def diff_cmd(old_file: str, new_file: str, fmt: str, exit_code: bool) -> None:
+    """Diff the schema of OLD_FILE against NEW_FILE."""
     try:
         old_schema = read_schema(old_file)
         new_schema = read_schema(new_file)
-    except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error reading schema: {exc}", err=True)
         sys.exit(2)
 
     diff = diff_schemas(old_schema, new_schema)
+    render(diff, fmt=OutputFormat(fmt))
 
-    if diff.is_empty:
-        click.echo(click.style("✔ Schemas are identical.", fg="green"))
-        return
-
-    if diff.removed:
-        click.echo(click.style("REMOVED columns (breaking):", fg="red", bold=True))
-        for f in diff.removed:
-            click.echo(f"  - {f.name}: {f.type}")
-
-    if diff.type_changed:
-        click.echo(click.style("TYPE CHANGES (breaking):", fg="red", bold=True))
-        for c in diff.type_changed:
-            click.echo(f"  ~ {c['name']}: {c['old']} → {c['new']}")
-
-    if diff.nullable_changed:
-        click.echo(click.style("NULLABILITY CHANGES:", fg="yellow", bold=True))
-        for c in diff.nullable_changed:
-            click.echo(f"  ~ {c['name']}: nullable={c['old']} → nullable={c['new']}")
-
-    if diff.added:
-        click.echo(click.style("ADDED columns:", fg="cyan", bold=True))
-        for f in diff.added:
-            click.echo(f"  + {f.name}: {f.type}")
-
-    if strict and diff.has_breaking_changes:
+    if exit_code and has_breaking_changes(diff):
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    cli()
