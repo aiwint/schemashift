@@ -13,6 +13,7 @@ from schemashift.exporter import export_diff, ExportError, ExportFormat
 
 
 def _make_diff():
+    """Return a simple SchemaDiff with one removed and one added field."""
     old = pa.schema([pa.field("id", pa.int64()), pa.field("name", pa.string())])
     new = pa.schema([pa.field("id", pa.int64()), pa.field("email", pa.string())])
     return diff_schemas(old, new)
@@ -61,3 +62,16 @@ class TestExportDiff:
         out = tmp_path / "report.txt"
         result = export_diff(diff, out)
         assert result.is_absolute()
+
+    def test_raises_on_unwritable_directory(self, tmp_path):
+        """export_diff should raise ExportError when the output directory is not writable."""
+        diff = _make_diff()
+        locked_dir = tmp_path / "locked"
+        locked_dir.mkdir()
+        locked_dir.chmod(0o444)  # read-only
+        out = locked_dir / "report.txt"
+        try:
+            with pytest.raises(ExportError):
+                export_diff(diff, out, fmt=ExportFormat.TEXT)
+        finally:
+            locked_dir.chmod(0o755)  # restore so tmp_path cleanup succeeds
