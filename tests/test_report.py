@@ -1,141 +1,130 @@
-"""Tests for schemashift.report formatting utilities."""
+"""Tests for schemashift.report."""
 
 from __future__ import annotations
 
 import json
-import io
 
 import pyarrow as pa
 import pytest
 
-from schemashift.schema_diff import diff_schemas
+from schemashift.schema_diff import SchemaDiff
+from schemashift.summarizer import DiffSummary, Severity
 from schemashift.report import (
     OutputFormat,
     format_text,
     format_json,
     format_markdown,
-    render,
+    format_report,
 )
 
 
-def _make_diff(old_fields, new_fields):
-    old = pa.schema(old_fields)
-    new = pa.schema(new_fields)
-    return diff_schemas(old, new)
+def _make_diff(
+    removed=(),
+    added=(),
+    type_changed=None,
+    nullability_changed=None,
+) -> SchemaDiff:
+    return SchemaDiff(
+        removed=list(removed),
+        added=list(added),
+        type_changed=type_changed or {},
+        nullability_changed=nullability_changed or {},
+    )
 
 
-# ---------------------------------------------------------------------------
-# format_text
-# ---------------------------------------------------------------------------
+def _summary(severity=None, details=None) -> DiffSummary:
+    return DiffSummary(severity=severity, details=details or [])
+
 
 class TestFormatText:
     def test_no_changes_message(self):
-        diff = _make_diff(
-            [("id", pa.int64())],
-            [("id", pa.int64())],
-        )
-        out = format_text(diff)
-        assert "No schema changes" in out
+        diff = _make_diff()
+        summary = _summary()
+        result = format_text(diff, summary)
+        assert "No schema changes" in result
 
     def test_removed_field_marked_breaking(self):
-        diff = _make_diff(
-            [("id", pa.int64()), ("name", pa.string())],
-            [("id", pa.int64())],
-        )
-        out = format_text(diff)
-        assert "BREAKING" in out
-        assert "name" in out
+        field = pa.field("old_col", pa.int32())
+        diff = _make_diff(removed=[field])
+        summary = _summary(severity=Severity.BREAKING, details=["Removed: old_col"])
+        result = format_text(diff, summary)
+        assert "old_col" in result
+        assert "BREAKING" in result
 
     def test_added_field_present(self):
-        diff = _make_diff(
-            [("id", pa.int64())],
-            [("id", pa.int64()), ("score", pa.float64())],
-        )
-        out = format_text(diff)
-        assert "score" in out
-        assert "Added fields" in out
+        field = pa.field("new_col", pa.string())
+        diff = _make_diff(added=[field])
+        summary = _summary(severity=Severity.INFO)
+        result = format_text(diff, summary)
+        assert "new_col" in result
 
-    def test_type_change_present(self):
-        diff = _make_diff(
-            [("value", pa.int32())],
-            [("value", pa.int64())],
-        )
-        out = format_text(diff)
-        assert "Type changes" in out
-        assert "value" in out
+    def test_type_change_shown(self):
+        diff = _make_diff(type_changed={"col": (pa.int32(), pa.int64())})
+        summary = _summary(severity=Severity.BREAKING)
+        result = format_text(diff, summary)
+        assert "col" in result
+        assert "int32" in result
+        assert "int64" in result
 
+    def test_nullability_change_shown(self):
+        diff = _make_diff(nullability_changed={"col": (True, False)})
+        summary = _summary(severity=Severity.WARNING)
+        result = format_text(diff, summary)
+        assert "col" in result
+        assert "nullable" in result
 
-# ---------------------------------------------------------------------------
-# format_json
-# ---------------------------------------------------------------------------
 
 class TestFormatJson:
-    def test_valid_json_output(self):
-        diff = _make_diff([("id", pa.int64())], [("id", pa.int64())])
-        raw = format_json(diff)
-        data = json.loads(raw)
-        assert "breaking" in data
-        assert data["breaking"] is False
+    def test_returns_valid_json(self):
+        diff = _make_diff()
+        summary = _summary()
+        data = json.loads(format_json(diff, summary))
+        assert "summary" in data
 
-    def test_breaking_flag_true_on_removal(self):
-        diff = _make_diff(
-            [("id", pa.int64()), ("ts", pa.timestamp("ms"))],
-            [("id", pa.int64())],
-        )
-        data = json.loads(format_json(diff))
-        assert data["breaking"] is True
-        assert any(f["name"] == "ts" for f in data["removed_fields"])
+    def test_added_field_in_json(self):
+        field = pa.field("score", pa.float64())
+        diff = _make_diff(added=[field])
+        summary = _summary(severity=Severity.INFO)
+        data = json.loads(format_json(diff, summary))
+        assert any(f["name"] == "score" for f in data["added"])
 
-    def test_added_fields_in_json(self):
-        diff = _make_diff(
-            [("id", pa.int64())],
-            [("id", pa.int64()), ("extra", pa.bool_())],
-        )
-        data = json.loads(format_json(diff))
-        assert any(f["name"] == "extra" for f in data["added_fields"])
+    def test_severity_in_summary(self):
+        diff = _make_diff(removed=[pa.field("x", pa.int32())])
+        summary = _summary(severity=Severity.BREAKING)
+        data = json.loads(format_json(diff, summary))
+        assert data["summary"]["severity"] == "breaking"
 
-
-# ---------------------------------------------------------------------------
-# format_markdown
-# ---------------------------------------------------------------------------
 
 class TestFormatMarkdown:
-    def test_contains_heading(self):
-        diff = _make_diff([("x", pa.int32())], [("x", pa.int32())])
-        out = format_markdown(diff)
-        assert "## Schema Diff" in out
+    def test_contains_header(self):
+        diff = _make_diff()
+        summary = _summary()
+        result = format_markdown(diff, summary)
+        assert "## Schema Diff Report" in result
 
-    def test_breaking_badge(self):
-        diff = _make_diff(
-            [("col", pa.string())],
-            [],
-        )
-        out = format_markdown(diff)
-        assert "Breaking" in out
-
-    def test_non_breaking_badge(self):
-        diff = _make_diff(
-            [("id", pa.int64())],
-            [("id", pa.int64()), ("new_col", pa.float32())],
-        )
-        out = format_markdown(diff)
-        assert "Non-breaking" in out
+    def test_removed_field_in_markdown(self):
+        field = pa.field("gone", pa.bool_())
+        diff = _make_diff(removed=[field])
+        summary = _summary(severity=Severity.BREAKING)
+        result = format_markdown(diff, summary)
+        assert "`gone`" in result
 
 
-# ---------------------------------------------------------------------------
-# render
-# ---------------------------------------------------------------------------
+class TestFormatReport:
+    def test_dispatches_to_json(self):
+        diff = _make_diff()
+        summary = _summary()
+        result = format_report(diff, summary, OutputFormat.JSON)
+        json.loads(result)  # must not raise
 
-def test_render_writes_to_stream():
-    diff = _make_diff([("a", pa.int8())], [("a", pa.int8())])
-    buf = io.StringIO()
-    render(diff, fmt=OutputFormat.TEXT, out=buf)
-    assert buf.getvalue().strip() != ""
+    def test_dispatches_to_markdown(self):
+        diff = _make_diff()
+        summary = _summary()
+        result = format_report(diff, summary, OutputFormat.MARKDOWN)
+        assert "#" in result
 
-
-def test_render_json_format():
-    diff = _make_diff([("a", pa.int8())], [("b", pa.int8())])
-    buf = io.StringIO()
-    render(diff, fmt=OutputFormat.JSON, out=buf)
-    data = json.loads(buf.getvalue())
-    assert "breaking" in data
+    def test_dispatches_to_text(self):
+        diff = _make_diff()
+        summary = _summary()
+        result = format_report(diff, summary, OutputFormat.TEXT)
+        assert "No schema changes" in result
