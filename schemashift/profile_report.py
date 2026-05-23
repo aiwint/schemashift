@@ -13,6 +13,7 @@ def _pct(rate: float) -> str:
 
 
 def format_profile_text(profile: SchemaProfile) -> str:
+    """Return a fixed-width text table summarising *profile*."""
     lines: List[str] = [
         f"Profile: {profile.path}",
         f"Rows   : {profile.row_count:,}",
@@ -30,6 +31,7 @@ def format_profile_text(profile: SchemaProfile) -> str:
 
 
 def format_profile_json(profile: SchemaProfile) -> str:
+    """Return a JSON string representation of *profile*."""
     data = {
         "path": profile.path,
         "row_count": profile.row_count,
@@ -48,6 +50,7 @@ def format_profile_json(profile: SchemaProfile) -> str:
 
 
 def format_profile_markdown(profile: SchemaProfile) -> str:
+    """Return a Markdown report for *profile*."""
     lines: List[str] = [
         f"## Profile: `{profile.path}`",
         "",
@@ -62,3 +65,30 @@ def format_profile_markdown(profile: SchemaProfile) -> str:
             f"| {fp.name} | {fp.type} | {fp.nullable} | {_pct(fp.null_rate)} |"
         )
     return "\n".join(lines)
+
+
+def format_profile(profile: SchemaProfile, fmt: str = "text") -> str:
+    """Dispatch to the appropriate formatter based on *fmt*.
+
+    Parameters
+    ----------
+    profile:
+        The :class:`SchemaProfile` to render.
+    fmt:
+        Output format – one of ``"text"``, ``"json"``, or ``"markdown"``.
+
+    Raises
+    ------
+    ValueError
+        If *fmt* is not a recognised format name.
+    """
+    formatters = {
+        "text": format_profile_text,
+        "json": format_profile_json,
+        "markdown": format_profile_markdown,
+    }
+    if fmt not in formatters:
+        raise ValueError(
+            f"Unknown format {fmt!r}. Expected one of: {', '.join(sorted(formatters))}."
+        )
+    return formatters[fmt](profile)
